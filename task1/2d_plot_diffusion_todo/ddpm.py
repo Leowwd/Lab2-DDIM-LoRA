@@ -185,8 +185,25 @@ class DiffusionModule(nn.Module):
             alpha_prod_t_prev = extract(self.var_scheduler.alphas_cumprod, t_prev, xt)
         else:
             alpha_prod_t_prev = torch.ones_like(alpha_prod_t)
-
-        x_t_prev = xt
+        
+        beta_t = extract(self.var_scheduler.betas, t, xt) 
+        # Predict noise
+        eps_theta = self.network(xt, t)
+        
+        # Predict x_0 from x_t and predicted noise
+        x0_pred = (xt - (1.0 - alpha_prod_t).sqrt() * eps_theta) / alpha_prod_t.sqrt()
+        
+        # sigma controls the stochasticity: sigma = eta * sqrt((1 - alpha_t-1) / (1 - alpha_t)) * beta_t
+        sigma_t = eta * torch.sqrt((1.0 - alpha_prod_t_prev) / (1.0 - alpha_prod_t)) * beta_t
+        
+        # Direction pointing to x_t
+        pred_dir = torch.sqrt(1.0 - alpha_prod_t_prev - sigma_t ** 2) * eps_theta
+        
+        # Random noise (only used when eta > 0)
+        noise = torch.randn_like(xt) if eta > 0 else torch.zeros_like(xt)
+        
+        # DDIM reverse step: x_{t-1} = sqrt(alpha_{t-1}) * x_0_pred + sqrt(1 - alpha_{t-1} - sigma_t^2) * eps + sigma_t * z
+        x_t_prev = alpha_prod_t_prev.sqrt() * x0_pred + pred_dir + sigma_t * noise
 
         ######################
         return x_t_prev
@@ -206,7 +223,9 @@ class DiffusionModule(nn.Module):
         ######## TODO ########
         # NOTE: This code is used for assignment 2. You don't need to implement this part for assignment 1.
         # DO NOT change the code outside this part.
-        # sample x0 based on Algorithm 2 of DDPM paper.
+        # sample x0 based on DDIM sampling algorithm.
+        
+        # Create a subset of timesteps for faster sampling
         step_ratio = self.var_scheduler.num_train_timesteps // num_inference_timesteps
         timesteps = (
             (np.arange(0, num_inference_timesteps) * step_ratio)
@@ -214,12 +233,15 @@ class DiffusionModule(nn.Module):
             .copy()
             .astype(np.int64)
         )
-        timesteps = torch.from_numpy(timesteps)
+        timesteps = torch.from_numpy(timesteps).to(self.device)
         prev_timesteps = timesteps - step_ratio
 
-        xt = torch.zeros(shape).to(self.device)
+        # Start from pure Gaussian noise
+        xt = torch.randn(shape).to(self.device)
+        
+        # Iteratively denoise
         for t, t_prev in zip(timesteps, prev_timesteps):
-            pass
+            xt = self.ddim_p_sample(xt, t, t_prev, eta=eta)
 
         x0_pred = xt
 
