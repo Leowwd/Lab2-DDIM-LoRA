@@ -6,6 +6,8 @@ results/
 outputs
 samples/
 .DS_Store
+*.ckpt
+runs/
 
 # Solutions
 2d_plot_diffusion
