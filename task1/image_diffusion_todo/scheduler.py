@@ -285,7 +285,19 @@ class DDIMScheduler(BaseScheduler):
         #   - Store the step ratio in `self._ddim_step_ratio` for later use when computing previous t.
         #   - Compute a `step_ratio` that maps inference steps to training steps.
         # DO NOT change the code outside this part.
-        raise NotImplementedError("TODO")
+        
+        self.num_inference_timesteps = num_inference_timesteps
+        
+        # Compute step ratio (how many training steps per inference step)
+        step_ratio = self.num_train_timesteps // num_inference_timesteps
+        self._ddim_step_ratio = step_ratio
+        
+        # Create a subset of timesteps: [0, step_ratio, 2*step_ratio, ..., (num_inference_timesteps-1)*step_ratio]
+        # Then reverse to get descending order: [(num_inference_timesteps-1)*step_ratio, ..., step_ratio, 0]
+        timesteps = (np.arange(0, num_inference_timesteps) * step_ratio).round().astype(np.int64)
+        timesteps = torch.from_numpy(timesteps[::-1].copy())  # Reverse for descending order
+        
+        self.timesteps = timesteps
         #######################
 
     def _get_teeth(self, consts: torch.Tensor, t: torch.Tensor):
@@ -308,6 +320,35 @@ class DDIMScheduler(BaseScheduler):
         ######## TODO ########
         # DO NOT change the code outside this part.
         assert predictor == "noise", "In assignment 2, we only implement DDIM with noise predictor."
-        sample_prev = None
+        
+        if isinstance(t, int):
+            t = torch.tensor([t]).to(x_t.device)
+        
+        # Compute t_prev (previous timestep in the inference schedule)
+        t_prev = t - self._ddim_step_ratio
+        
+        # Extract alpha_bar values
+        alpha_bar_t = extract(self.alphas_cumprod, t, x_t)
+        if t_prev >= 0:
+            alpha_bar_t_prev = extract(self.alphas_cumprod, t_prev, x_t)
+        else:
+            alpha_bar_t_prev = torch.ones_like(alpha_bar_t)
+        beta_t = extract(self.betas, t, x_t)  
+        
+        # Predict x_0 from x_t and predicted noise
+        x0_pred = (x_t - torch.sqrt(1.0 - alpha_bar_t) * eps_theta) / torch.sqrt(alpha_bar_t)
+        
+        # Compute sigma (variance) controlled by eta
+        sigma_t = self.eta * torch.sqrt((1.0 - alpha_bar_t_prev) / (1.0 - alpha_bar_t)) * beta_t
+        
+        # Direction pointing to x_t
+        pred_dir = torch.sqrt(1.0 - alpha_bar_t_prev - sigma_t ** 2) * eps_theta
+        
+        # Add random noise (only when eta > 0)
+        noise = torch.randn_like(x_t) if self.eta > 0 else torch.zeros_like(x_t)
+        
+        # DDIM reverse step
+        sample_prev = torch.sqrt(alpha_bar_t_prev) * x0_pred + pred_dir + sigma_t * noise
+        
         #######################
         return sample_prev
