@@ -25,22 +25,44 @@ class DiffusionModule(nn.Module):
     def get_loss_x0(self, x0, class_label=None, noise=None):
         ######## TODO ########
         # Here we implement the "predict x0" version.
-        # 1. Sample a timestep and add noise to get (x_t, noise).
-        # 2. Pass (x_t, timestep) into self.network, where the output should represent the clean sample x0_pred.
+        # 1. Sample a timestep and add noise to get (x_t, noise_gt).
+        B = x0.shape[0]
+        t = self.var_scheduler.uniform_sample_t(B, x0.device)
+        x_t, _ = self.var_scheduler.add_noise(x0, t, noise)
+
+        # 2. Pass (x_t, timestep) into self.network, where the output represents the clean sample xo_pred.
+        x0_pred = self.network(x_t, t, class_label) if class_label is not None else self.network(x_t, t)
+        
         # 3. Compute the loss as MSE(predicted x0_pred, ground-truth x0).
+        loss = F.mse_loss(x0_pred, x0)
         ######################
-        loss = None
         return loss
     
     def get_loss_mean(self, x0, class_label=None, noise=None):
         ######## TODO ########
         # Here we implement the "predict mean" version.
-        # 1. Sample a timestep and add noise to get (x_t, noise).
-        # 2. Pass (x_t, timestep) into self.network, where the output should represent the posterior mean μθ(x_t, t).
-        # 3. Compute the *true* posterior mean from the closed-form DDPM formula (using x0, x_t, noise, and scheduler terms).
+        # 1. Sample a timestep and add noise to get (x_t, noise_gt).
+        B = x0.shape[0]
+        t = self.var_scheduler.uniform_sample_t(B, x0.device)
+        x_t, _ = self.var_scheduler.add_noise(x0, t, noise)
+        # 2. Pass (x_t, timestep) into self.network, where the output represents the posterior mean μ_θ(x_t, t)
+        mean_pred = self.network(x_t, t, class_label)
+        
+        # 3. Compute the true posterior mean from the closed-form DDPM formula.
+        beta_t = extract(self.var_scheduler.betas, t, x_t)
+        alpha_t = extract(self.var_scheduler.alphas, t, x_t)
+        alpha_bar_t = extract(self.var_scheduler.alphas_cumprod, t, x_t)
+        t_prev      = (t - 1).clamp(min=0)
+        alpha_bar_t_prev = extract(self.var_scheduler.alphas_cumprod, t_prev, x_t)
+
+        xt_factor = alpha_t.sqrt() * (1 - alpha_bar_t_prev) / (1 - alpha_bar_t)
+        x0_factor = alpha_bar_t_prev.sqrt() * beta_t / (1 - alpha_bar_t)
+        
+        mean_gt = xt_factor * x_t + x0_factor * x0
+        
         # 4. Compute the loss as MSE(predicted mean, true mean).
+        loss = F.mse_loss(mean_pred, mean_gt)
         ######################
-        loss = None
         return loss
     
     def get_loss(self, x0, class_label=None, noise=None):
